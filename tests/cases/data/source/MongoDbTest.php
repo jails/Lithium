@@ -442,6 +442,7 @@ class MongoDbTest extends \lithium\test\Unit {
 
 		$result = $this->_db->connection->queries;
 		$createOpts = array(
+			'with' => false,
 			'validate' => true,
 			'events' => 'create',
 			'whitelist' => null,
@@ -649,8 +650,8 @@ class MongoDbTest extends \lithium\test\Unit {
 			'collection' => 'posts',
 			'data' => array('initial' => 'one', 'values' => 'two', '_id' => $document->_id),
 			'options' => array(
-				'validate' => true, 'events' => 'create', 'whitelist' => null, 'callbacks' => true,
-				'locked' => false, 'w' => 1, 'wTimeoutMS' => 10000, 'fsync' => false
+				'with' => false, 'validate' => true, 'events' => 'create', 'whitelist' => null,
+				'callbacks' => true, 'locked' => false, 'w' => 1, 'wTimeoutMS' => 10000, 'fsync' => false
 			)
 		);
 		$this->assertEqual($expected, $result);
@@ -666,7 +667,7 @@ class MongoDbTest extends \lithium\test\Unit {
 			'conditions' => array('_id' => $document->_id),
 			'update' => array('$set' => array('values' => 'new')),
 			'options' => array(
-				'validate' => true, 'events' => 'update', 'whitelist' => null,
+				'with' => false, 'validate' => true, 'events' => 'update', 'whitelist' => null,
 				'callbacks' => true, 'locked' => false, 'upsert' => false, 'multiple' => true,
 				'w' => 1, 'wTimeoutMS' => 10000, 'fsync' => false
 			)
