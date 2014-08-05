@@ -632,7 +632,11 @@ class Model extends \lithium\core\StaticObject {
 		$isFinder = is_string($type) && isset($self->_finders[$type]);
 
 		if ($type !== 'all' && !is_array($type) && !$isFinder) {
-			$options['conditions'] = static::key($type);
+			if (isset($options['conditions'])) {
+				$options['conditions'] += static::key($type);
+			} else {
+				$options['conditions'] = static::key($type);
+			}
 			$type = 'first';
 		}
 
