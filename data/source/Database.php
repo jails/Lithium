@@ -197,11 +197,11 @@ abstract class Database extends \lithium\data\Source {
 
 		$this->_strings += array(
 			'read' => 'SELECT {:fields} FROM {:source} {:alias} {:joins} {:conditions} {:group} ' .
-			          '{:having} {:order} {:limit};{:comment}'
+					  '{:having} {:order} {:limit};{:comment}'
 		);
 
 		$this->_strategies += array(
-			'joined' => function($self, $model, $context) {
+			'join' => function($self, $model, $context) {
 
 				$with = $context->with();
 
@@ -221,7 +221,7 @@ abstract class Database extends \lithium\data\Source {
 							));
 							if ($unallowed) {
 								$message = "Only `'alias'` and `'constraints'` are allowed in ";
-								$message .= "`'with'` using the `'joined'` strategy.";
+								$message .= "`'with'` using the `'join'` strategy.";
 								throw new QueryException($message);
 							}
 							extract($with[$relPath]);
@@ -314,8 +314,8 @@ abstract class Database extends \lithium\data\Source {
 					}
 				}
 			},
-			'nested' => function($self, $model, $context) {
-				throw new QueryException("This strategy is not yet implemented.");
+			'embed' => function($self, $model, $context) {
+				$context->embed($context->with());
 			}
 		);
 	}
@@ -592,9 +592,16 @@ abstract class Database extends \lithium\data\Source {
 			}
 			$result = $self->invokeMethod('_execute', array($sql));
 
+			$collection = [];
+
 			switch ($return) {
 				case 'resource':
 					return $result;
+				case 'item':
+					$collection = $model::create(array(), compact('query', 'result') + array(
+						'class' => 'set', 'defaults' => false
+					));
+				break;
 				case 'array':
 					$columns = $args['schema'] ?: $self->schema($query, $result);
 
@@ -619,12 +626,13 @@ abstract class Database extends \lithium\data\Source {
 						}
 						$i++;
 					}
-					return Set::expand($records);
-				case 'item':
-					return $model::create(array(), compact('query', 'result') + array(
-						'class' => 'set', 'defaults' => false
-					));
+					$collection = Set::expand($records);
+				break;
 			}
+			if (is_object($query) && $query->embed()) {
+				$model::embed($collection, $query->embed(), ['return' => $return]);
+			}
+			return $collection;
 		});
 	}
 
@@ -1509,7 +1517,7 @@ abstract class Database extends \lithium\data\Source {
 			return;
 		}
 
-		$options += array('strategy' => 'joined');
+		$options += array('strategy' => 'join');
 		if (!$model = $context->model()) {
 			throw new ConfigException('The `\'with\'` option need a valid `\'model\'` option.');
 		}
