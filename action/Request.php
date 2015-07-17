@@ -378,7 +378,9 @@ class Request extends \lithium\net\http\Request {
 				$val = null;
 			break;
 			case 'HTTPS':
-				if (isset($this->_env['SCRIPT_URI'])) {
+				if (isset($this->_env['HTTP_X_FORWARDED_PROTO'])) {
+					$val = $this->_env['HTTP_X_FORWARDED_PROTO'] === 'https';
+				} elseif (isset($this->_env['SCRIPT_URI'])) {
 					$val = strpos($this->_env['SCRIPT_URI'], 'https://') === 0;
 				} elseif (isset($this->_env['HTTPS'])) {
 					$val = (!empty($this->_env['HTTPS']) && $this->_env['HTTPS'] !== 'off');

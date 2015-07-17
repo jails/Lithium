@@ -205,6 +205,15 @@ class RequestTest extends \lithium\test\Unit {
 		$this->assertTrue($request->env('HTTPS'));
 	}
 
+	public function testHttpsFromXforwardedProto() {
+		$request = new Request(array('env' => array(
+			'SCRIPT_URI' => 'http://lithium.com',
+			'HTTPS' => false,
+			'HTTP_X_FORWARDED_PROTO' => 'https'
+		)));
+		$this->assertTrue($request->env('HTTPS'));
+	}
+
 	public function testRemoteAddr() {
 		$request = new Request(array('env' => array('REMOTE_ADDR' => '123.456.789.000')));
 		$this->assertEqual('123.456.789.000', $request->env('REMOTE_ADDR'));
