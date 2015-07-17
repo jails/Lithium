@@ -24,6 +24,8 @@ class DatabaseTest extends \lithium\tests\integration\data\Base {
 	protected $_fixtures = array(
 		'images' => 'lithium\tests\fixture\model\gallery\ImagesFixture',
 		'galleries' => 'lithium\tests\fixture\model\gallery\GalleriesFixture',
+		'images_tags' => 'lithium\tests\fixture\model\gallery\ImagesTagsFixture',
+		'tags' => 'lithium\tests\fixture\model\gallery\TagsFixture',
 	);
 
 	/**
@@ -153,8 +155,43 @@ class DatabaseTest extends \lithium\tests\integration\data\Base {
 		$this->assertEqual($expected, $images);
 	}
 
+	public function testManyToOneUsingEmbedStrategy() {
+		$opts = array('conditions' => array('gallery_id' => 1), 'strategy' => 'embed');
+
+		$query = new Query($opts + array(
+			'type' => 'read',
+			'model' => 'lithium\tests\fixture\model\gallery\Images',
+			'source' => 'images',
+			'alias' => 'Images',
+			'with' => array('Galleries')
+		));
+		$images = $this->_db->read($query)->data();
+		$expected = include $this->_export . '/testManyToOne.php';
+		$this->assertEqual($expected, $images);
+
+		$images = Images::find('all', $opts + array('with' => 'Galleries'))->data();
+		$this->assertEqual($expected, $images);
+	}
+
 	public function testOneToMany() {
 		$opts = array('conditions' => array('Galleries.id' => 1));
+
+		$query = new Query($opts + array(
+			'type' => 'read',
+			'model' => 'lithium\tests\fixture\model\gallery\Galleries',
+			'source' => 'galleries',
+			'alias' => 'Galleries',
+			'with' => array('Images')
+		));
+		$galleries = $this->_db->read($query)->data();
+		$expected = include $this->_export . '/testOneToMany.php';
+
+		$gallery = Galleries::find('first', $opts + array('with' => 'Images'))->data();
+		$this->assertEqual(reset($expected), $gallery);
+	}
+
+	public function testOneToManyUsingEmbedStrategy() {
+		$opts = array('conditions' => array('Galleries.id' => 1), 'strategy' => 'embed');
 
 		$query = new Query($opts + array(
 			'type' => 'read',
@@ -194,6 +231,82 @@ class DatabaseTest extends \lithium\tests\integration\data\Base {
 		));
 		$galleries = $this->_db->read($query);
 		$this->assertCount(3, $galleries->first()->images);
+	}
+
+	public function testManyToManyUsingEmbedStrategy() {
+		$opts = array('with' => array('Tags'), 'strategy' => 'embed');
+
+		$query = new Query($opts + array(
+			'type' => 'read',
+			'model' => 'lithium\tests\fixture\model\gallery\Images',
+			'source' => 'images',
+			'alias' => 'Images'
+		));
+
+		$images = $this->_db->read($query)->to('array', array('indexed' => true));
+		$expected = include($this->_export . '/testManyToMany.php');
+		$this->assertEqual($expected, $images);
+
+		$images = Images::find('all', $opts)->to('array', array('indexed' => true));
+		$this->assertEqual($expected, $images);
+	}
+
+	public function testManyToMany() {
+		$opts = array('with' => array('Tags'));
+
+		$query = new Query($opts + array(
+			'type' => 'read',
+			'model' => 'lithium\tests\fixture\model\gallery\Images',
+			'source' => 'images',
+			'alias' => 'Images'
+		));
+
+		$images = $this->_db->read($query)->to('array', array('indexed' => true));
+		$expected = include($this->_export . '/testManyToMany.php');
+		$this->assertEqual($expected, $images);
+
+		$images = Images::find('all', $opts)->to('array', array('indexed' => true));
+		$this->assertEqual($expected, $images);
+	}
+
+	public function testManyToManyRecursiveQuery() {
+		$opts = array(
+			'with' => array('Images.Tags.Images.Tags'),
+			'order' => 'Galleries.id, Images.id, Tags.id, Images__2.id, Tags__2.id'
+		);
+
+		$query = new Query($opts + array(
+			'type' => 'read',
+			'model' => 'lithium\tests\fixture\model\gallery\Galleries',
+			'source' => 'galleries',
+			'alias' => 'Galleries'
+		));
+
+		$galleries = $this->_db->read($query)->to('array', array('indexed' => true));
+		$expected = include($this->_export . '/testManyToManyRecursiveQuery.php');
+		$this->assertEqual($expected, $galleries);
+		$galleries = Galleries::find('all', $opts)->to('array', array('indexed' => true));
+		$this->assertEqual($expected, $galleries);
+	}
+
+	public function testManyToManyAndLimit() {
+		$opts = array('with' => array('Tags'), 'limit' => 2, 'offset' => 0);
+
+		$query = new Query($opts + array(
+			'type' => 'read',
+			'model' => 'lithium\tests\fixture\model\gallery\Images',
+			'source' => 'images',
+			'alias' => 'Images'
+		));
+
+		$images = $this->_db->read($query)->to('array', array('indexed' => true));
+		$expected = include($this->_export . '/testManyToMany.php');
+		$this->assertEqual(reset($expected), reset($images));
+		$this->assertEqual(next($expected), next($images));
+
+		$images = Images::find('all', $opts)->to('array', array('indexed' => true));
+		$this->assertEqual(reset($expected), reset($images));
+		$this->assertEqual(next($expected), next($images));
 	}
 
 	public function testUpdate() {
@@ -375,6 +488,128 @@ class DatabaseTest extends \lithium\tests\integration\data\Base {
 		));
 		$this->assertEqual(1, $results->count());
 	}
+
+	public function testSaveNested() {
+		Fixtures::drop('db');
+		Fixtures::create('db');
+		$data = array(
+			'name' => 'Foo Gallery',
+			'images' => array(
+				array(
+					'image' => 'someimage.png',
+					'title' => 'Image1 Title',
+					'tags' => array(
+						array('name' => 'tag1'),
+						array('name' => 'tag2'),
+						array('name' => 'tag3')
+					)
+				),
+				array(
+					'image' => 'anotherImage.jpg',
+					'title' => 'Our Vacation',
+					'tags' => array(
+						array('name' => 'tag4'),
+						array('name' => 'tag5')
+					)
+				),
+				array(
+					'image' => 'me.bmp',
+					'title' => 'Me.',
+					'tags' => array()
+				)
+			)
+		);
+
+		$gallery = Galleries::create($data);
+		$this->assertTrue($gallery->save(null, array('with' => true)));
+		$result = Galleries::find('all', array('with' => 'Images.Tags'));
+		$expected = include($this->_export . '/testSaveNested.php');
+		$this->assertEqual($expected, $result->to('array', array('indexed' => true)));
+	}
+
+	public function testSaveHabtmWithFormCompatibleData() {
+		Fixtures::drop('db', array('images', 'images_tags'));
+		Fixtures::create('db', array('images', 'images_tags'));
+
+		$image = Images::create(array(
+			'image' => 'someimage.png',
+			'title' => 'Image1 Title',
+			'tags' => array(1, 3, 6)
+		));
+		$image->save(null, array('with' => 'Tags'));
+
+		$result = Images::find('first', array('with' => 'Tags'));
+		$expected = include($this->_export . '/testSaveHabtmWithFormCompatibleData.php');
+		$this->assertEqual($expected, $result->to('array', array('indexed' => true)));
+	}
+
+	public function testSaveNestedWithHabtm() {
+		$galleries = Galleries::find('all', array('with' => 'Images.Tags'));
+
+		foreach ($galleries->save() as $result) {
+			$this->assertTrue($result);
+		}
+
+		$expected = $galleries->data();
+		$result = Galleries::find('all', array('with' => 'Images.Tags'))->data();
+		$this->assertEqual($expected, $result);
+	}
+
+	public function testSaveNestedWithEmptyHabtm() {
+		Fixtures::drop('db');
+		Fixtures::create('db');
+
+		$data = array(
+			'name' => 'Foo Gallery',
+			'images' => array()
+		);
+
+		$gallery = Galleries::create($data);
+		$this->assertTrue($gallery->save());
+
+		$result = Galleries::find('all', array('with' => 'Images'))->data();
+		$expected = array(
+			1 => array (
+				'id' => '1',
+				'name' => 'Foo Gallery',
+				'active' => '1',
+				'images' => array(),
+				'created' => null,
+				'modified' => null,
+			)
+		);
+		$this->assertEqual($expected, $result);
+
+		Fixtures::drop('db');
+		Fixtures::create('db');
+		$data = array(
+			'name' => 'Foo Gallery',
+			'images' => ''
+		);
+
+		$gallery = Galleries::create($data);
+		$this->assertTrue($gallery->save());
+
+		$result = Galleries::find('all', array('with' => 'Images'))->data();
+		$this->assertEqual($expected, $result);
+	}
+
+	public function testSaveNestedWithHabtmAndUnset() {
+		$galleries = Galleries::find('all', array('with' => 'Images.Tags'));
+		$this->assertCount(2, $galleries[1]->images[1]->tags);
+
+		$key = $galleries[1]->images[1]->tags->first()->key();
+		unset($galleries[1]->images[1]->tags[reset($key)]);
+
+		foreach ($galleries->save() as $result) {
+			$this->assertTrue($result);
+		}
+
+		$expected = $galleries->data();
+		$result = Galleries::find('all', array('with' => 'Images.Tags'))->data();
+		$this->assertCount(1, $galleries[1]->images[1]->tags);
+	}
+
 }
 
 ?>

@@ -8,6 +8,7 @@
 
 namespace lithium\data\model;
 
+use Exception;
 use Countable;
 use lithium\util\Set;
 use lithium\core\Libraries;
@@ -103,6 +104,8 @@ class Relationship extends \lithium\core\Object {
 	 *        - `'strategy'` _closure_: An anonymous function used by an instantiating class,
 	 *          such as a database object, to provide additional, dynamic configuration, after
 	 *          the `Relationship` instance has finished configuring itself.
+	 *        - `via` _string_: HABTM specific option with indicate the relation name of the
+	 *          middle class
 	 */
 	public function __construct(array $config = array()) {
 		$defaults = array(
@@ -115,7 +118,8 @@ class Relationship extends \lithium\core\Object {
 			'fields'      => true,
 			'fieldName'   => null,
 			'constraints' => array(),
-			'strategy'    => null
+			'strategy'    => null,
+			'via' => null
 		);
 		$config += $defaults;
 
@@ -311,6 +315,346 @@ class Relationship extends \lithium\core\Object {
 				return $model::all(Set::merge($query, $options));
 			}
 		);
+	}
+
+	/**
+	 * Validates an entity relation.
+	 *
+	 * @param object $entity The relation's entity
+	 * @param array $options Validates option.
+	 */
+	public function validates($entity, array $options = array()) {
+		$defaults = array('with' => false);
+		$fieldName = $this->fieldName();
+		if (!isset($entity->$fieldName)) {
+			return;
+		}
+		return (array) $entity->$fieldName->validates($options + $defaults);
+	}
+
+	/**
+	 * Saving an entity relation.
+	 *
+	 * @param object $entity The relation's entity
+	 * @param array $options Saving options.
+	 */
+	public function save($entity, array $options = array()) {
+		$fieldName = $this->fieldName();
+		$model = $entity->model();
+		$isRelation = is_object($entity->$fieldName) && $this->link() === Relationship::LINK_KEY;
+		if (!$isRelation || !$model) {
+			return true;
+		}
+		if (($type = $this->type()) !== 'belongsTo' && !($keys = $model::key($entity))) {
+			return true;
+		}
+
+		$result = false;
+		switch ($type){
+			case 'hasAndBelongsToMany':
+				$relVia = $model::relations($this->via());
+				$fKeys = $relVia->foreignKey($keys);
+				$toVia = $relVia->to();
+				$relTo = $toVia::relations($this->name());
+				$related = $entity->$fieldName;
+				$method = '_habtm' . ucfirst($this->viaMode() ?: 'diff');
+				$result = $this->$method($related, $relTo, $relVia, $fKeys, $options);
+				unset($entity->{$relVia->fieldName()});
+			break;
+			case 'hasMany':
+				$fKeys = $this->foreignKey($keys);
+				$to = $this->to();
+				$data = array_fill_keys(array_keys($fKeys), null);
+				$to::update($data, $fKeys);
+				foreach ($entity->$fieldName as $relEntity) {
+					$relEntity->set($fKeys);
+					$result = $relEntity->save(null, $options);
+				}
+			break;
+			case 'hasOne':
+				$fKeys = $this->foreignKey($keys);
+				$relEntity = $entity->$fieldName;
+				$relEntity->set($fKeys);
+				$result = $relEntity->save(null, $options);
+			break;
+			case 'belongsTo':
+				$relEntity = $entity->$fieldName;
+				$result = $relEntity->save();
+				$relModel = $relEntity->model();
+				$keys = $relModel::key($relEntity);
+				$fKeys = $this->foreignKey($keys);
+				$entity->set($fKeys);
+			break;
+		}
+		return $result;
+	}
+
+	/**
+	 * Perform a HABTM diff saving (i.e only create/delete the unexisted/deleted associations)
+	 *
+	 * @param object $entity The entity.
+	 * @param object $relTo The destination relation.
+	 * @param object $relVia The middle relation.
+	 * @param array $foreignKeys The foreign keys extracted from the via relation.
+	 * @param array $options Saving options.
+	 * @return boolean
+	 */
+	protected function _habtmDiff($entity, $relTo, $relVia, &$foreignKeys, array &$options = array()) {
+		$return = true;
+		$to = $relTo->to();
+		$middle = $relVia->to();
+		$alreadySaved = $middle::find('all', array(
+			'conditions' => array('or' => $foreignKeys)
+		))->data();
+
+		foreach ($entity as $relEntity) {
+			$relEntity->save(null, $options);
+			$keys = $to::key($relEntity);
+			$foreignKeys2 = $relTo->foreignKey($keys);
+			$toFind = count($foreignKeys2);
+			$finded = false;
+			foreach ($alreadySaved as $key => $value) {
+				$intersect = array_intersect_assoc($foreignKeys2, $value);
+				if (count($intersect) === $toFind) {
+					unset($alreadySaved[$key]);
+					$finded = true;
+					break;
+				}
+			}
+
+			if (!$finded) {
+				$habtm = $middle::create($foreignKeys + $foreignKeys2);
+				$return &= $habtm->save(null, $options);
+			}
+		}
+		$toDelete = array();
+		foreach ($alreadySaved as $key => $value) {
+			$toDelete[] = $middle::key($value);
+		}
+		if ($toDelete) {
+			$return &= $middle::remove(array('or' => $toDelete));
+		}
+		return true;
+	}
+
+	/**
+	 * Perform a HABTM flush saving (i.e remove & recreate all associations)
+	 *
+	 * @param object $entity The entity.
+	 * @param object $relTo The destination relation.
+	 * @param object $relVia The middle relation.
+	 * @param array $foreignKeys The foreign keys.
+	 * @param array $options Saving options.
+	 * @return boolean
+	 */
+	protected function _habtmFlush($entity, $relTo, $relVia, &$foreignKeys, array &$options = array()) {
+		$return = true;
+		$to = $relTo->to();
+		$middle = $relVia->to();
+		$return &= $middle::remove($foreignKeys);
+		foreach ($entity as $relEntity) {
+			$relEntity->save(null, $options);
+			$keys = $to::key($relEntity);
+			$foreignKeys2 = $relTo->foreignKey($keys);
+			$habtm = $middle::create($foreignKeys + $foreignKeys2);
+			$return &= $habtm->save(null, $options);
+		}
+		return $return;
+	}
+
+	public function embed(&$collection, $options = [])
+	{
+		$keys = $this->key();
+		list($formKey, $toKey) = each($keys);
+
+		$related = [];
+
+		if ($this->type() === 'belongsTo') {
+
+			$indexes = $this->_index($collection, $formKey);
+			$related = $this->_find(array_keys($indexes), $options);
+
+			$fieldName = $this->fieldName();
+			$indexes = $this->_index($related, $toKey);
+			$this->_cleanup($collection);
+
+			foreach ($collection as $index => $source) {
+				if (is_object($source)) {
+					$value = $source->{$formKey};
+					if (isset($indexes[$value])) {
+						$source->{$fieldName} = $related[$indexes[$value]];
+					}
+				} else {
+					$value = $source[$formKey];
+					if (isset($indexes[$value])) {
+						$collection[$index][$fieldName] = $related[$indexes[$value]];
+					}
+				}
+			}
+
+		} elseif ($this->type() === 'hasMany') {
+
+			$indexes = $this->_index($collection, $formKey);
+			$related = $this->_find(array_keys($indexes), $options);
+
+			$fieldName = $this->fieldName();
+
+			$this->_cleanup($collection);
+
+			foreach ($collection as $index => $entity) {
+				if (is_object($entity)) {
+					$entity->{$fieldName} = [];
+				} else {
+					$collection[$index][$fieldName] = [];
+				}
+			}
+
+			foreach ($related as $index => $entity) {
+				if (is_object($entity)) {
+					$value = $entity->{$toKey};
+					if (isset($indexes[$value])) {
+						$source = $collection[$indexes[$value]];
+						$source->{$fieldName}[] = $entity;
+					}
+				} else {
+					$value = $entity[$toKey];
+					if (isset($indexes[$value])) {
+						$collection[$indexes[$value]][$fieldName][] = $entity;
+					}
+				}
+			}
+
+		} elseif ($this->type() === 'hasOne') {
+
+			$indexes = $this->_index($collection, $formKey);
+			$related = $this->_find(array_keys($indexes), $options);
+			$fieldName = $this->fieldName();
+			$this->_cleanup($collection);
+			foreach ($related as $index => $entity) {
+				if (is_object($entity)) {
+					$value = $entity->{$toKey};
+					if (isset($indexes[$value])) {
+						$source = $collection[$indexes[$value]];
+						$source->{$fieldName} = $entity;
+					}
+				} else {
+					$value = $entity[$toKey];
+					if (isset($indexes[$value])) {
+						$collection[$indexes[$value]][$fieldName] = $entity;
+					}
+				}
+			}
+
+		} elseif ($this->type() === 'hasAndBelongsToMany') {
+
+			$from = $this->from();
+			$viaRel = $from::relations($this->via());
+			$viaFieldname = $viaRel->fieldName();
+			$pivot = $viaRel->embed($collection, $options);
+
+			$viaKeys = $viaRel->key();
+			list($viaKeyFrom, $viaKeyTo) = each($viaKeys);
+
+			$indexes = $this->_index($pivot, $toKey);
+			$related = [];
+
+			if ($indexes) {
+				$to = $this->to();
+				$related = $to::find('all', $options + ['conditions' => [
+					'id' => array_keys($indexes)
+				]]);
+			}
+
+			$indexes = $this->_index($related, 'id');
+
+			$fieldName = $this->fieldName();
+			$this->_cleanup($collection);
+
+			foreach ($collection as $index => $entity) {
+				if (is_object($entity)) {
+					$entity->{$fieldName} = [];
+				} else {
+					$collection[$index][$fieldName] = [];
+				}
+			}
+
+			foreach ($collection as $index => $entity) {
+				if (is_object($entity)) {
+					$middle = $entity->$viaFieldname;
+					foreach ($middle as $key => $value) {
+						$entity->{$fieldName}[] = $related[$indexes[$value->$toKey]];
+					}
+				} else {
+					$middle = $entity[$viaFieldname];
+					foreach ($middle as $key => $value) {
+						$entity[$fieldName][] = $related[$indexes[$value->$toKey]];
+					}
+				}
+			}
+
+		} else {
+			throw new Exception("Error {$this->type()} is unsupported ");
+		}
+		return $related;
+	}
+
+	/**
+	 * Gets all entities attached to a collection en entities.
+	 *
+	 * @param  mixed  $id An id or an array of ids.
+	 * @return object     A collection of items matching the id/ids.
+	 */
+	protected function _find($id, $options = [])
+	{
+		if ($this->link() !== static::LINK_KEY) {
+			throw new SourceException("This relation is not based on a foreign key.");
+		}
+		if ($id === []) {
+			return [];
+		}
+		$to = $this->to();
+
+		return $to::find('all', $options + ['conditions' => [
+			current($this->key()) => $id
+		]]);
+	}
+
+	/**
+	 * Indexes a collection.
+	 *
+	 * @param  mixed  $collection An collection to extract index from.
+	 * @param  string $name       The field name to build index for.
+	 * @return array              An array of indexes where keys are `$name` values and
+	 *                            values the correcponding index in the collection.
+	 */
+	protected function _index($collection, $name)
+	{
+		$indexes = [];
+		foreach ($collection as $key => $entity) {
+			if (is_object($entity)) {
+				$indexes[$entity->{$name}] = $key;
+			} else {
+				$indexes[$entity[$name]] = $key;
+			}
+		}
+		return $indexes;
+	}
+
+	/**
+	 * Unsets the relationship attached to a collection en entities.
+	 *
+	 * @param  mixed  $collection An collection to "clean up".
+	 */
+	public function _cleanup($collection)
+	{
+		$name = $this->name();
+		foreach ($collection as $index => $entity) {
+			if (is_object($entity)) {
+				unset($entity->{$name});
+			} else {
+				unset($entity[$name]);
+			}
+		}
 	}
 }
 

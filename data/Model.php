@@ -118,6 +118,13 @@ class Model extends \lithium\core\StaticObject {
 	public $belongsTo = array();
 
 	/**
+	 * Model hasAndBelongsToMany relations.
+	 *
+	 * @var array
+	 */
+	public $hasAndBelongsToMany = array();
+
+	/**
 	 * Stores model instances for internal use.
 	 *
 	 * While the `Model` public API does not require instantiation thanks to late static binding
@@ -175,10 +182,11 @@ class Model extends \lithium\core\StaticObject {
 	 * - `belongsTo`
 	 * - `hasOne`
 	 * - `hasMany`
+	 * - `hasAndBelongsToMany`
 	 *
 	 * @var array
 	 */
-	protected $_relationTypes = array('belongsTo', 'hasOne', 'hasMany');
+	protected $_relationTypes = array('belongsTo', 'hasOne', 'hasMany', 'hasAndBelongsToMany');
 
 	/**
 	 * Store available relation names for this model which still unloaded.
@@ -624,7 +632,11 @@ class Model extends \lithium\core\StaticObject {
 		$isFinder = is_string($type) && isset($self->_finders[$type]);
 
 		if ($type !== 'all' && !is_array($type) && !$isFinder) {
-			$options['conditions'] = static::key($type);
+			if (isset($options['conditions'])) {
+				$options['conditions'] += static::key($type);
+			} else {
+				$options['conditions'] = static::key($type);
+			}
 			$type = 'first';
 		}
 
@@ -1107,23 +1119,30 @@ class Model extends \lithium\core\StaticObject {
 			'events' => $entity->exists() ? 'update' : 'create',
 			'whitelist' => null,
 			'callbacks' => true,
-			'locked' => $self->_meta['locked']
+			'locked' => $self->_meta['locked'],
+			'with' => false
 		);
 		$options += $defaults;
-		$params = compact('entity', 'data', 'options');
+
+		$params = compact('entity', 'options');
+
+		if ($data) {
+			$entity->set($data);
+		}
+
+		if (!$this->_saveRelations($entity, 'belongsTo', $options)) {
+			return false;
+		}
 
 		$filter = function($self, $params) use ($_meta, $_schema) {
 			$entity = $params['entity'];
 			$options = $params['options'];
 
-			if ($params['data']) {
-				$entity->set($params['data']);
-			}
 			if ($rules = $options['validate']) {
 				$events = $options['events'];
 				$validateOpts = is_array($rules) ? compact('rules','events') : compact('events');
-
-				if (!$entity->validates($validateOpts)) {
+				$with = $options['with'];
+				if (!$entity->validates(compact('with') + $validateOpts)) {
 					return false;
 				}
 			}
@@ -1134,13 +1153,52 @@ class Model extends \lithium\core\StaticObject {
 			$type = $entity->exists() ? 'update' : 'create';
 			$queryOpts = compact('type', 'whitelist', 'entity') + $options + $_meta;
 			$query = $self::invokeMethod('_instance', array('query', $queryOpts));
-			return $self::connection()->{$type}($query, $options);
+			$result = $self::connection()->{$type}($query, $options);
+
+			return $result;
 		};
 
 		if (!$options['callbacks']) {
 			return $filter(get_called_class(), $params);
 		}
-		return static::_filter(__FUNCTION__, $params, $filter);
+		$return = static::_filter(__FUNCTION__, $params, $filter);
+
+		$hasRelations = array('hasAndBelongsToMany', 'hasMany', 'hasOne');
+
+		if (!$this->_saveRelations($entity, $hasRelations, $options)) {
+			return false;
+		}
+
+		return $return;
+	}
+
+	/**
+	 * Save relations helper.
+	 *
+	 * @param object $entity The record or document object to be saved in the database.
+	 * @param array $types Type of relations to save.
+	 */
+	protected static function _saveRelations($entity, $types, array $options = array()) {
+		$defaults = array('with' => false);
+		$options += $defaults;
+
+		if (!$with = static::_withRelations($options['with'])) {
+			return true;
+		}
+
+		$model = $entity->model();
+		$types = (array) $types;
+		foreach ($types as $type) {
+			foreach ($with as $relName => $value) {
+				if (!($rel = $model::relations($relName)) || $rel->type() !== $type) {
+					continue;
+				}
+				if (!$rel->save($entity, array('with' => $value) + $options)) {
+					return false;
+				}
+			}
+		}
+		return true;
 	}
 
 	/**
@@ -1190,13 +1248,25 @@ class Model extends \lithium\core\StaticObject {
 		$defaults = array(
 			'rules' => $this->validates,
 			'events' => $entity->exists() ? 'update' : 'create',
-			'model' => get_called_class()
+			'model' => get_called_class(),
+			'with' => false
 		);
 		$options += $defaults;
 		$self = static::_object();
 		$validator = $self->_classes['validator'];
 		$entity->errors(false);
 		$params = compact('entity', 'options');
+
+		if ($with = static::_withRelations($options['with'])) {
+			$model = $entity->model();
+			foreach ($with as $relName => $value) {
+				$rel = $model::relations($relName);
+				$errors = $rel->validates($entity->$relName, array('with' => $value) + $options);
+				if ($errors && !array_filter($errors)) {
+					return false;
+				}
+			}
+		}
 
 		$filter = function($parent, $params) use ($validator) {
 			$entity = $params['entity'];
@@ -1210,6 +1280,18 @@ class Model extends \lithium\core\StaticObject {
 			return empty($errors);
 		};
 		return static::_filter(__FUNCTION__, $params, $filter);
+	}
+
+	protected static function _withRelations($with) {
+		if (!$with) {
+			return  false;
+		}
+		if ($with === true) {
+			$with = array_fill_keys(array_keys(static::relations()), true);
+		} else {
+			$with = Set::expand(Set::normalize((array) $with));
+		}
+		return $with;
 	}
 
 	/**
@@ -1453,6 +1535,34 @@ class Model extends \lithium\core\StaticObject {
 				return $self::connection()->calculation('count', $query, $options);
 			}
 		);
+	}
+
+	/**
+	 * Eager loads relations.
+	 *
+	 * @param array $collection The collection to extend.
+	 * @param array $relations  The relations to eager load.
+	 * @param array $options    The fetching options.
+	 */
+	public static function embed(&$collection, $relations, $options = [])
+	{
+		$tree = Set::expand(array_fill_keys(array_keys($relations), []));
+
+		foreach ($tree as $name => $subtree) {
+			$rel = static::relations($name);
+			$to = $rel->to();
+			$related = $rel->embed($collection, $options);
+
+			$subrelations = [];
+			foreach ($relations as $path => $value) {
+				if (preg_match('~^'.$name.'\.(.*)$~', $path, $matches)) {
+					$subrelations[] = $matches[1];
+				}
+			}
+			if ($subrelations) {
+				$to::embed($related, $subrelations, $options);
+			}
+		}
 	}
 
 	/**

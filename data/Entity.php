@@ -155,7 +155,7 @@ class Entity extends \lithium\core\Object implements \Serializable {
 
 	protected function _init() {
 		parent::_init();
-		$this->_updated = $this->_data;
+		$this->set($this->_data);
 	}
 
 	/**
@@ -197,6 +197,21 @@ class Entity extends \lithium\core\Object implements \Serializable {
 	 */
 	public function __isset($name) {
 		return isset($this->_updated[$name]) || isset($this->_relationships[$name]);
+	}
+
+	/**
+	 * PHP magic method used when unset() is called on a `Entity` instance.
+	 * Use case for this would be when you wish to edit a document and remove a field, ie.:
+	 * {{{
+	 * $entity = Post::find($id);
+	 * unset($entity->fieldName);
+	 * $entity->save();
+	 * }}}
+	 *
+	 * @param string $name The name of the field to remove.
+	 */
+	public function __unset($name) {
+		unset($this->_updated[$name]);
 	}
 
 	/**

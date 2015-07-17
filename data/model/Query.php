@@ -543,6 +543,20 @@ class Query extends \lithium\core\Object {
 	}
 
 	/**
+	 * Set and get method for the query's order specification.
+	 *
+	 * @param array|string $order
+	 * @return mixed
+	 */
+	public function embbed($embbed = null) {
+		if ($embbed) {
+			$this->_config['embbed'] = $embbed;
+			return $this;
+		}
+		return $this->_config['embbed'];
+	}
+
+	/**
 	 * Convert the query's properties to the data sources' syntax and return it as an array.
 	 *
 	 * @param object $source Instance of the data source (`lithium\data\Source`) to use for
